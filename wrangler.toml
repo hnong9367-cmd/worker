@@ -1,0 +1,8 @@
+name = "square-frost-f595"
+main = "_worker.js"
+compatibility_date = "2026-05-22"
+
+[vars]
+USERNAME = "Tannong706@gmail.com"
+PASSWORD = "dg6WL-gzMZe-7gmZM-3K9B5-PQirx"
+SECURITY_ENABLED = "false"
