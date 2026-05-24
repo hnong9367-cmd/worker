@@ -1,4 +1,4 @@
-name = "d1git"
+name = "workerjs"
 
 main = "_worker.js"
 
