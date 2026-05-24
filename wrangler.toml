@@ -1,11 +1,13 @@
 name = "d1git"
+
 main = "_worker.js"
+
 compatibility_date = "2026-05-22"
 
 [vars]
 ADMIN_TOKEN = "@admin"
 
 [[d1_databases]]
-binding       = "DB"
-database_name = "server_tom"
-database_id   = "469ce0bf-082f-49c8-aacc-8294760ec09f"
+binding = "DB"
+database_name = "database"
+database_id = "6bb34396-3b68-4d5a-b608-c401d2a2cd81"
