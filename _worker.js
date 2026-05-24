@@ -29,15 +29,12 @@ export default {
         });
         
         let opts = [];
-        // Xử lý options dựa theo định dạng JSON
         if (q.type === "multiple_true_false" && q.statements) {
           opts = q.statements.map(st => ({ id: st.id, content: st.text, is_correct: st.answer }));
         } else {
           if (Array.isArray(q.options)) {
-            // Dạng Mảng: [ {id: "A", content: "..."} ]
             opts = q.options.map(o => ({ id: o.id, content: o.content || o.text, is_correct: (q.correct_answers || []).includes(o.id) }));
           } else if (q.options && typeof q.options === 'object') {
-            // Dạng Đối tượng: { "A": "...", "B": "..." }
             opts = Object.entries(q.options).map(([key, val]) => ({ id: key, content: val, is_correct: (q.correct_answers || []).includes(key) }));
           }
         }
@@ -51,16 +48,54 @@ export default {
 
     try {
       // ================= NHÓM 1: PUBLIC / HỌC SINH =================
+      
+      // Hỗ trợ tìm kiếm tài khoản khi học sinh quên tên đăng nhập
+      // Có thể truyền query dạng: /api/users/lookup?name=Nguyen
+      if (path === "/api/users/lookup" && method === "GET") {
+        const nameQuery = url.searchParams.get("name") || "";
+        let results;
+        if (nameQuery.trim() !== "") {
+          const { results: filtered } = await env.DB.prepare(
+            `SELECT display_name, username FROM users WHERE display_name LIKE ? ORDER BY display_name`
+          ).bind(`%${nameQuery}%`).all();
+          results = filtered;
+        } else {
+          const { results: allUsers } = await env.DB.prepare(
+            `SELECT display_name, username FROM users ORDER BY display_name`
+          ).all();
+          results = allUsers;
+        }
+        return res({ success: true, data: results });
+      }
+
       if (path === "/api/users/list" && method === "GET") {
         const { results } = await env.DB.prepare(`SELECT display_name, username FROM users ORDER BY display_name`).all();
         return res({ success: true, data: results });
       }
       
+      // Đăng ký tài khoản (Học sinh tự chọn username, password, display_name. UID tự sinh từ phía máy chủ)
       if (path === "/api/register" && method === "POST") {
-        const { user_id, username, password, display_name } = await request.json();
+        const { username, password, display_name } = await request.json();
+        
+        if (!username || !password || !display_name) {
+          return res({ error: "Vui lòng nhập đầy đủ: Tên đăng nhập, Mật khẩu và Tên hiển thị!" }, 400);
+        }
+
+        const cleanUsername = username.trim();
+
+        // Kiểm tra xem tên đăng nhập đã được sử dụng chưa
+        const existing = await env.DB.prepare(`SELECT 1 FROM users WHERE username=?`).bind(cleanUsername).first();
+        if (existing) {
+          return res({ error: "Tên đăng nhập đã tồn tại!" }, 400);
+        }
+
+        // Tạo UUID v4 ngẫu nhiên làm mã định danh người dùng duy nhất
+        const user_id = crypto.randomUUID();
+
         await env.DB.prepare(`INSERT INTO users (user_id, username, password, display_name) VALUES (?,?,?,?)`)
-          .bind(user_id, username, password, display_name).run();
-        return res({ success: true, message: "Đăng ký thành công!" });
+          .bind(user_id, cleanUsername, password, display_name.trim()).run();
+          
+        return res({ success: true, message: "Đăng ký thành công!", user_id, username: cleanUsername });
       }
 
       if (path === "/api/login" && method === "POST") {
@@ -113,6 +148,69 @@ export default {
       // ================= NHÓM 2: ADMIN =================
       if (path.startsWith("/api/admin/") && !isAdmin) return res({ error: "Lỗi Token Quản trị!" }, 403);
 
+      // Admin - Xóa sạch toàn bộ dữ liệu trên hệ thống để làm sạch môi trường test
+      if (path === "/api/admin/system/reset" && method === "POST") {
+        await env.DB.batch([
+          env.DB.prepare(`DELETE FROM quiz_results`),
+          env.DB.prepare(`DELETE FROM submission_answers`),
+          env.DB.prepare(`DELETE FROM submissions`),
+          env.DB.prepare(`DELETE FROM question_options`),
+          env.DB.prepare(`DELETE FROM questions`),
+          env.DB.prepare(`DELETE FROM users`),
+          env.DB.prepare(`DELETE FROM app_config`),
+          env.DB.prepare(`INSERT INTO app_config (key, value) VALUES ('version', '1.0.0'), ('quiz_minutes', '45')`)
+        ]);
+        return res({ success: true, message: "Hệ thống đã được xóa sạch dữ liệu và đưa về trạng thái ban đầu!" });
+      }
+
+      if (path === "/api/admin/users" && method === "GET") {
+        const { results } = await env.DB.prepare(`SELECT user_id, username, display_name, password FROM users ORDER BY username`).all();
+        return res({ success: true, data: results });
+      }
+
+      if (path === "/api/admin/users/delete" && method === "POST") {
+        const { user_id } = await request.json();
+        if (!user_id) return res({ error: "Thiếu user_id!" }, 400);
+        await env.DB.batch([
+          env.DB.prepare(`DELETE FROM quiz_results WHERE user_id = ?`).bind(user_id),
+          env.DB.prepare(`DELETE FROM submissions WHERE user_id = ?`).bind(user_id),
+          env.DB.prepare(`DELETE FROM users WHERE user_id = ?`).bind(user_id)
+        ]);
+        return res({ success: true, message: "Xóa tài khoản và dữ liệu liên quan thành công!" });
+      }
+
+      if (path === "/api/admin/users/change-password" && method === "POST") {
+        const { user_id, new_password } = await request.json();
+        if (!user_id || !new_password) return res({ error: "Thiếu user_id hoặc mật khẩu mới!" }, 400);
+        await env.DB.prepare(`UPDATE users SET password = ? WHERE user_id = ?`).bind(new_password, user_id).run();
+        return res({ success: true, message: "Thay đổi mật khẩu thành công!" });
+      }
+
+      if (path === "/api/admin/users/update" && method === "POST") {
+        const { user_id, username, display_name } = await request.json();
+        if (!user_id) return res({ error: "Thiếu user_id!" }, 400);
+
+        if (username) {
+          const conflict = await env.DB.prepare(`SELECT 1 FROM users WHERE username = ? AND user_id != ?`).bind(username, user_id).first();
+          if (conflict) {
+            return res({ error: "Tên đăng nhập mới đã tồn tại trên hệ thống!" }, 400);
+          }
+        }
+
+        let updates = [];
+        let params = [];
+        if (username !== undefined) { updates.push("username = ?"); params.push(username.trim()); }
+        if (display_name !== undefined) { updates.push("display_name = ?"); params.push(display_name.trim()); }
+
+        if (updates.length === 0) return res({ error: "Không có thông tin nào để thay đổi!" }, 400);
+
+        params.push(user_id);
+        const query = `UPDATE users SET ${updates.join(", ")} WHERE user_id = ?`;
+        await env.DB.prepare(query).bind(...params).run();
+
+        return res({ success: true, message: "Cập nhật tài khoản thành công!" });
+      }
+
       if (path === "/api/admin/stats" && method === "GET") {
         const { results } = await env.DB.prepare(`SELECT * FROM view_full_results ORDER BY score DESC, duration_minutes ASC`).all();
         return res({ success: true, data: results });
@@ -126,7 +224,6 @@ export default {
         ]);
         const { qRows, oRows } = flattenQuestions(questions, quiz_id);
         
-        // Cắt nhỏ lệnh chèn để Cloudflare không bị nghẽn
         const qStmts = qRows.map(q => env.DB.prepare(`INSERT INTO questions (question_id, quiz_id, parent_id, type, content, material, sort_order) VALUES (?,?,?,?,?,?,?)`).bind(q.question_id, q.quiz_id, q.parent_id, q.type, q.content, q.material, q.sort_order));
         const oStmts = oRows.map(o => env.DB.prepare(`INSERT INTO question_options (option_id, question_id, content, is_correct, sort_order) VALUES (?,?,?,?,?)`).bind(o.option_id, o.question_id, o.content, o.is_correct, o.sort_order));
         
@@ -146,7 +243,6 @@ export default {
 
       return res({ error: "Không tìm thấy Route" }, 404);
     } catch (err) {
-      // Bắt lỗi hệ thống để Worker không bị sập cứng
       return res({ error: err.message, stack: err.stack }, 500);
     }
   }
